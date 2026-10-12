@@ -1570,6 +1570,22 @@ async def try_handle_jm_subscription(bot, event, matcher, text):
     return False
 
 
+# 推送失败的「目标已失效」特征：机器人被移出群、群已解散、对方已注销等。
+# 这类失败重试多少次都不会成功，继续留着订阅只会每天白报一次错（实测：
+# 「发送失败，你已被移出该群，请重新加群。」），所以遇到就自动把订阅清掉。
+PUSH_GONE_MARKERS = (
+    "已被移出", "被移出", "重新加群", "不在该群", "不在群里", "群不存在",
+    "群号无效", "不是好友", "user not found", "group not found", "not in group",
+)
+
+
+def push_target_gone(exc):
+    """区分「推送目标已失效」和「网络抖动」——只有前者才该自动取消订阅。"""
+    text = str(exc or "")
+    lowered = text.lower()
+    return any(marker in text or marker.lower() in lowered for marker in PUSH_GONE_MARKERS)
+
+
 async def pixiv_daily_push_once():
     if not is_feature_enabled("pixiv_recommend"):
         return
@@ -1588,7 +1604,13 @@ async def pixiv_daily_push_once():
         try:
             await send_pixiv_recommendations(bot, destination_type, destination_id, PIXIV_DAILY_COUNT)
         except Exception as exc:
-            logger.warning(f"Pixiv daily push failed for {destination_type}:{destination_id}: {exc}")
+            if push_target_gone(exc) and remove_pixiv_subscription(destination_type, destination_id):
+                logger.warning(
+                    f"Pixiv 日榜推送失败且目标已失效，已自动取消订阅 "
+                    f"{destination_type}:{destination_id}：{exc}"
+                )
+            else:
+                logger.warning(f"Pixiv daily push failed for {destination_type}:{destination_id}: {exc}")
 
     mark_pixiv_daily_sent()
 
@@ -1673,7 +1695,13 @@ async def push_jm_subscription_updates(updates):
             else:
                 await bot.send_private_msg(user_id=int(destination_id), message=message)
         except Exception as exc:
-            logger.warning(f"JM 订阅推送失败 {destination_type}:{destination_id}: {exc}")
+            if push_target_gone(exc) and remove_jm_subscription(destination_type, destination_id, comic_id):
+                logger.warning(
+                    f"JM 订阅推送失败且目标已失效，已自动取消该订阅 "
+                    f"{destination_type}:{destination_id} 漫画 {comic_id}：{exc}"
+                )
+            else:
+                logger.warning(f"JM 订阅推送失败 {destination_type}:{destination_id}: {exc}")
 
 
 async def jm_subscription_loop():

@@ -137,6 +137,7 @@ PIXIV_PHPSESSID=...            # 不填 = Pixiv R18/R18G 图片取不到
 | P0-4 | CHANGELOG 说用 launcher-noadmin，代码里写死 launcher.bat | `StartNapCat()` 按 `launcher-user.bat`（官方免提权）→ `launcher-noadmin.bat`（项目自带）→ `launcher.bat`（需管理员）顺序查找 | `BotManagerApp.cs` |
 | P0-3 | 已编译的修复未部署 | 新增 `build_manager.bat` 一键编译（产物 `JMComicBotManager.new.exe`），配合已有 `apply_fix.bat` 完成部署 | `build_manager.bat`（新增） |
 | P1-6 | `.env` 对插件层完全失效 | `bot.py` 的加载器改为依次读取 `.env.local`、`.env` 并写入 `os.environ`（`setdefault` 保证优先级：系统环境变量 > `.env.local` > `.env`） | `bot.py` |
+| 附录 | 推送失败到已失效的目标会每天白报一次错（实测：`发送失败，你已被移出该群，请重新加群。`） | 新增 `push_target_gone()` 判定：只有「目标已失效」类错误才自动取消该订阅（Pixiv 日榜 / JM 追更两条推送路径都接了）；网络抖动、超时类错误保留订阅不误删 | `plugins/jmcomic_bot.py` |
 | 附录 | 依赖声明缺 extra，按 README 装完起不来 | `requirements.txt` 与 `pyproject.toml` 对齐为 `nonebot2[fastapi,websockets]>=2.4.4` | `requirements.txt` |
 
 ### 实测记录
@@ -149,4 +150,6 @@ PIXIV_PHPSESSID=...            # 不填 = Pixiv R18/R18G 图片取不到
 | `BotManagerApp.cs` 编译 | `csc.exe` 退出码 0 |
 | `bot.py` 修复后 `os.environ` | `JM_CHAT_JUDGE=1`、`JM_SEARCH_SEND_COVERS=3`、`JM_CACHE_MAX_AGE_DAYS=30` 等全部就位（修复前均为 `None`） |
 | 机器人启动（全新 venv / nonebot 2.5.0 / Python 3.14） | 12 个插件全部加载，监听 `127.0.0.1:8081` |
+| 推送失效目标自动退订（桩测试，不碰真实数据） | 判定函数 7/7 正确；Pixiv 路径：失效目标被移除、正常目标保留；网络抖动：订阅保留不误删；JM 路径：失效订阅被移除、正常订阅保留 —— 全部通过 |
+| 真实机器上跑通（2026-10-12） | NapCat v4.18.38 注入 QQ `9.9.35-52892` 成功，OneBot 连接建立（日志 `Bot <你的QQ> connected`），收发了真实群消息；`.env` 修复经逐键比对确认**不改变任何既有行为**（26 个参数取值与代码默认值完全一致） |
 
