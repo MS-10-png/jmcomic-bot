@@ -97,32 +97,64 @@ function Backup-NapCatConfig {
     # Keep user config (OneBot endpoint, WebUI token, plugins) across updates.
     $backup = Join-Path $Root ".napcat-config-backup"
     if (Test-Path $backup) { Remove-Item $backup -Recurse -Force }
+    New-Item -ItemType Directory -Path $backup -Force | Out-Null
+
     $dirs = @(Get-ChildItem -Path $ShellDir -Recurse -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -eq "config" })
-    if ($dirs.Count -eq 0) { return "" }
-    New-Item -ItemType Directory -Path $backup -Force | Out-Null
     $i = 0
     foreach ($d in $dirs) {
         Copy-Item $d.FullName (Join-Path $backup ("cfg" + $i)) -Recurse -Force
         $i++
     }
-    Write-Host "[OK] Backed up $i config folder(s) to $backup"
+
+    # Preserve files this project added on top of the official package; they are
+    # NOT in the release zip and would otherwise be destroyed by the wipe below.
+    $customNames = @("launcher-noadmin.bat")
+    $customDir = Join-Path $backup "custom"
+    New-Item -ItemType Directory -Path $customDir -Force | Out-Null
+    $kept = 0
+    foreach ($name in $customNames) {
+        $hit = Get-ChildItem -Path $ShellDir -Recurse -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hit) {
+            Copy-Item $hit.FullName (Join-Path $customDir $name) -Force
+            $kept++
+        }
+    }
+
+    Write-Host "[OK] Backed up $i config folder(s) and $kept custom file(s) to $backup"
     return $backup
 }
 
 function Restore-NapCatConfig($backup) {
     if (-not $backup -or -not (Test-Path $backup)) { return }
+
+    # 1) config folders
     $target = Get-ChildItem -Path $ShellDir -Recurse -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -eq "config" } |
         Select-Object -First 1
     if (-not $target) {
         Write-Host "[WARN] No config folder in the new NapCat; backup kept at $backup"
-        return
+    } else {
+        Get-ChildItem $backup -Directory | Where-Object { $_.Name -like "cfg*" } | ForEach-Object {
+            Copy-Item (Join-Path $_.FullName "*") $target.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host "[OK] Restored previous config into $($target.FullName)"
     }
-    Get-ChildItem $backup -Directory | ForEach-Object {
-        Copy-Item (Join-Path $_.FullName "*") $target.FullName -Recurse -Force -ErrorAction SilentlyContinue
+
+    # 2) custom launcher files, placed next to the official launchers
+    $customDir = Join-Path $backup "custom"
+    if (Test-Path $customDir) {
+        $official = Get-ChildItem -Path $ShellDir -Recurse -Filter "launcher.bat" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($official) {
+            $n = 0
+            Get-ChildItem $customDir -File | ForEach-Object {
+                Copy-Item $_.FullName (Join-Path $official.Directory.FullName $_.Name) -Force
+                $n++
+            }
+            if ($n -gt 0) { Write-Host "[OK] Restored $n custom launcher file(s) next to the official ones" }
+        }
     }
-    Write-Host "[OK] Restored previous config into $($target.FullName)"
 }
 
 function Install-NapCatShell($reason) {

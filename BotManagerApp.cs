@@ -1729,9 +1729,10 @@ namespace JMComicBotManager
                 return;
             }
 
-            // 1) 优先用不需要管理员权限的 launcher-noadmin.bat，失败再回退 launcher.bat。
+            // 1) 优先免提权的 launcher：官方 launcher-user.bat → 项目自带 launcher-noadmin.bat
+            //    → 最后才回退到需要管理员权限的 launcher.bat。
             string launcher = null;
-            string[] preferred = new string[] { "launcher-noadmin.bat", "launcher.bat" };
+            string[] preferred = new string[] { "launcher-user.bat", "launcher-noadmin.bat", "launcher.bat" };
             foreach (string name in preferred)
             {
                 launcher = Directory.GetFiles(napcatRoot, name, SearchOption.AllDirectories).FirstOrDefault();
