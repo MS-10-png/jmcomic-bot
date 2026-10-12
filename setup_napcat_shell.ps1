@@ -1,3 +1,7 @@
+param(
+    [switch]$Force
+)
+
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -63,18 +67,67 @@ function Write-OneBotConfig($ConfigDir) {
     Write-Host "[OK] Wrote OneBot config: $Path"
 }
 
-Write-Host "[INFO] Project: $Root"
-$QQExe = Find-InstalledQQ
-Write-Host "[OK] Installed QQNT: $QQExe"
+# ---------------------------------------------------------------------------
+# Compatibility gate.
+# NapCat injects into QQ through hook offsets keyed by the QQ buildId. QQ
+# hot-updates silently in the background, so a NapCat that worked last week can
+# stop working today with no visible error. So "the folder exists" is no longer
+# treated as "it works" -- we ask check_napcat_compat.ps1 instead.
+#
+# Returns: "ok" | "missing" | "incompatible" | "unknown"
+# ---------------------------------------------------------------------------
+function Test-NapCatCompatibility {
+    if (-not (Test-Path $ShellDir)) { return "missing" }
 
-if (-not (Test-Path $ShellDir)) {
-    New-Item -ItemType Directory -Path $ShellDir | Out-Null
+    $checker = Join-Path $Root "check_napcat_compat.ps1"
+    if (-not (Test-Path $checker)) { return "unknown" }
+
+    # Run as a separate process on purpose: the checker uses `exit <code>`,
+    # which must not terminate this script.
+    $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $checker -Root $Root -Quiet
+    $code = $LASTEXITCODE
+
+    if ($code -eq 0) { return "ok" }
+    if ($code -eq 1) { return "incompatible" }
+    if ($code -eq 2) { return "missing" }
+    return "unknown"
 }
 
-$Launcher = Get-ChildItem -Path $ShellDir -Recurse -Filter "launcher.bat" -ErrorAction SilentlyContinue | Select-Object -First 1
+function Backup-NapCatConfig {
+    # Keep user config (OneBot endpoint, WebUI token, plugins) across updates.
+    $backup = Join-Path $Root ".napcat-config-backup"
+    if (Test-Path $backup) { Remove-Item $backup -Recurse -Force }
+    $dirs = @(Get-ChildItem -Path $ShellDir -Recurse -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "config" })
+    if ($dirs.Count -eq 0) { return "" }
+    New-Item -ItemType Directory -Path $backup -Force | Out-Null
+    $i = 0
+    foreach ($d in $dirs) {
+        Copy-Item $d.FullName (Join-Path $backup ("cfg" + $i)) -Recurse -Force
+        $i++
+    }
+    Write-Host "[OK] Backed up $i config folder(s) to $backup"
+    return $backup
+}
 
-if (-not $Launcher) {
-    Write-Host "[INFO] Downloading NapCat Shell Windows Node package..."
+function Restore-NapCatConfig($backup) {
+    if (-not $backup -or -not (Test-Path $backup)) { return }
+    $target = Get-ChildItem -Path $ShellDir -Recurse -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "config" } |
+        Select-Object -First 1
+    if (-not $target) {
+        Write-Host "[WARN] No config folder in the new NapCat; backup kept at $backup"
+        return
+    }
+    Get-ChildItem $backup -Directory | ForEach-Object {
+        Copy-Item (Join-Path $_.FullName "*") $target.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "[OK] Restored previous config into $($target.FullName)"
+}
+
+function Install-NapCatShell($reason) {
+    Write-Host "[INFO] Updating NapCat Shell. Reason: $reason"
+
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath
@@ -90,6 +143,8 @@ if (-not $Launcher) {
         }
     }
 
+    $backup = Backup-NapCatConfig
+
     Write-Host "[INFO] Extracting NapCat Shell..."
     if (Test-Path $ShellDir) {
         Remove-Item -Path $ShellDir -Recurse -Force
@@ -98,11 +153,59 @@ if (-not $Launcher) {
     Expand-Archive -Path $ZipPath -DestinationPath $ShellDir -Force
     Remove-Item -Path $ZipPath -Force
 
-    $Launcher = Get-ChildItem -Path $ShellDir -Recurse -Filter "launcher.bat" -ErrorAction SilentlyContinue | Select-Object -First 1
+    Restore-NapCatConfig $backup
+
+    Write-Host "[OK] NapCat Shell updated."
 }
 
+Write-Host "[INFO] Project: $Root"
+$QQExe = Find-InstalledQQ
+Write-Host "[OK] Installed QQNT: $QQExe"
+
+if (-not (Test-Path $ShellDir)) {
+    New-Item -ItemType Directory -Path $ShellDir | Out-Null
+}
+
+# ---- decide whether we actually need to (re)install ----------------------
+$status = Test-NapCatCompatibility
+Write-Host "[INFO] NapCat compatibility status: $status"
+
+$shouldInstall = $false
+$reason = ""
+
+if ($Force) {
+    $shouldInstall = $true
+    $reason = "forced re-install requested (-Force)"
+} elseif ($status -eq "missing") {
+    $shouldInstall = $true
+    $reason = "NapCat Shell is not installed"
+} elseif ($status -eq "incompatible") {
+    $shouldInstall = $true
+    $reason = "installed QQ build is NOT supported by the current NapCat (the silent-failure case)"
+} elseif ($status -eq "ok") {
+    Write-Host "[OK] Existing NapCat Shell is compatible with the installed QQ. Skipping download."
+    Write-Host "[INFO] Use -Force to reinstall anyway."
+} else {
+    Write-Host "[WARN] Compatibility could not be determined. Keeping the existing NapCat Shell."
+}
+
+if ($shouldInstall) {
+    Install-NapCatShell $reason
+}
+
+$Launcher = Get-ChildItem -Path $ShellDir -Recurse -Filter "launcher.bat" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $Launcher) {
     throw "launcher.bat was not found after extracting NapCat Shell."
+}
+
+# ---- report the final state ----------------------------------------------
+$finalStatus = Test-NapCatCompatibility
+if ($finalStatus -eq "ok") {
+    Write-Host "[OK] NapCat is compatible with the installed QQ build."
+} elseif ($finalStatus -eq "incompatible") {
+    Write-Host "[WARN] Still incompatible after update. QQ may be newer than any released NapCat."
+    Write-Host "[WARN] Check https://github.com/NapNeko/NapCatQQ/releases and wait for support,"
+    Write-Host "[WARN] or install an older QQ build that this NapCat supports."
 }
 
 $RunDir = $Launcher.Directory.FullName

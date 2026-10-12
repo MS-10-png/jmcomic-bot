@@ -1582,6 +1582,127 @@ namespace JMComicBotManager
             StartNoneBot();
         }
 
+        /// <summary>
+        /// QQ 版本兼容自检。
+        ///
+        /// QQ 会在后台静默热更；一旦落到 NapCat 尚未适配的 buildId，Hook 注入就会失败，
+        /// 机器人收不到任何消息——而现场往往只有一行 "Please run this script in
+        /// administrator mode"，排查方向完全被带偏。所以在启动前先问一句
+        /// check_napcat_compat.ps1，把这个静默失败变成明确提示。
+        ///
+        /// 返回 false 表示「确定不兼容」，应当阻止启动。
+        /// </summary>
+        private bool NapCatCompatibilityOk(out string detail)
+        {
+            detail = "";
+            string checker = Path.Combine(root, "check_napcat_compat.ps1");
+            if (!File.Exists(checker))
+            {
+                detail = "未找到 check_napcat_compat.ps1，跳过兼容性自检。";
+                return true;
+            }
+
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = "powershell.exe";
+                psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(checker)
+                    + " -Root " + Quote(root) + " -Quiet";
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.CreateNoWindow = true;
+                psi.StandardOutputEncoding = Encoding.UTF8;
+                psi.StandardErrorEncoding = Encoding.UTF8;
+
+                using (Process p = Process.Start(psi))
+                {
+                    string stdout = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(20000);
+                    WriteLog("napcat", "兼容性自检：" + stdout.Replace("\r\n", " | ").Replace("\n", " | ").Trim());
+
+                    string verdict = "";
+                    string[] lines = stdout.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (string line in lines)
+                    {
+                        string t = line.Trim();
+                        if (t.StartsWith("RESULT=")) { verdict = t.Substring("RESULT=".Length).Trim(); break; }
+                    }
+
+                    if (verdict == "UNSUPPORTED")
+                    {
+                        detail = "当前 QQ 版本不受本地 NapCat 支持，启动必然失败"
+                            + "（这是「机器人突然没反应」最常见的原因）。\r\n\r\n"
+                            + stdout.Trim()
+                            + "\r\n\r\n请先更新 NapCat：点「安装/修复 NapCat」，或运行 setup_napcat_shell.ps1。";
+                        return false;
+                    }
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                detail = "兼容性自检执行失败（不阻止启动）：" + ex.Message;
+                return true;
+            }
+        }
+
+        /// <summary>读日志尾部若干行，用于启动失败时给出可读的现场。</summary>
+        private string TailLog(string key, int maxLines)
+        {
+            try
+            {
+                string path = Path.Combine(logDir, key + ".log");
+                if (!File.Exists(path)) return "（暂无日志）";
+                string[] lines = ReadSharedText(path).Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                int start = Math.Max(0, lines.Length - maxLines);
+                List<string> tail = new List<string>();
+                for (int i = start; i < lines.Length; i++) tail.Add(lines[i]);
+                return string.Join("\r\n", tail.ToArray());
+            }
+            catch (Exception ex)
+            {
+                return "（读取日志失败：" + ex.Message + "）";
+            }
+        }
+
+        /// <summary>
+        /// 启动后验证。cmd.exe 立刻退出并不等于失败（成功时它也会退出），
+        /// 所以要同时看 NapCat 进程、cmd 进程和日志原文三者。
+        /// </summary>
+        private void VerifyNapCatStartup(string launcher)
+        {
+            System.Threading.Thread.Sleep(4000);
+            Application.DoEvents();
+
+            bool napcatAlive = IsNapCatRunning();
+            bool cmdAlive = IsRunning("napcat");
+            string tail = TailLog("napcat", 10);
+            bool permissionHint = tail.IndexOf("administrator", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            if (napcatAlive || cmdAlive)
+            {
+                if (permissionHint && !napcatAlive)
+                {
+                    SetMessage("NapCat 可能未成功注入：launcher 提示需要管理员权限，详见日志。");
+                    WriteLog("napcat", "启动后检测到权限提示，NapCat 注入可能失败。");
+                }
+                else
+                {
+                    SetMessage("NapCat 已启动。");
+                }
+                RefreshStatus();
+                return;
+            }
+
+            string message = "NapCat 启动失败：进程已退出。\r\n\r\n"
+                + "使用的 launcher：" + launcher + "\r\n\r\n"
+                + "最近日志：\r\n" + tail;
+            WriteLog("napcat", message);
+            SetMessage("NapCat 启动失败（进程已退出，详情见日志与弹窗）");
+            MessageBox.Show(message, "NapCat 启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+
         private void StartNapCat()
         {
             if (IsRunning("napcat") || IsNapCatRunning())
@@ -1591,19 +1712,45 @@ namespace JMComicBotManager
             }
 
             string napcatRoot = Path.Combine(root, "NapCat.Shell");
-            string launcher = Directory.Exists(napcatRoot)
-                ? Directory.GetFiles(napcatRoot, "launcher.bat", SearchOption.AllDirectories).FirstOrDefault()
-                : null;
+            if (!Directory.Exists(napcatRoot))
+            {
+                SetMessage("没有找到 NapCat.Shell，请先点「安装/修复 NapCat」。");
+                return;
+            }
+
+            // 0) 兼容性自检：QQ 热更后 NapCat 常常失配，此时启动必然静默失败，先拦下来。
+            string compatDetail;
+            if (!NapCatCompatibilityOk(out compatDetail))
+            {
+                SetMessage("已阻止启动：QQ 版本与 NapCat 不兼容（详见日志）");
+                WriteLog("napcat", compatDetail);
+                MessageBox.Show(compatDetail, "QQ 版本与 NapCat 不兼容",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // 1) 优先用不需要管理员权限的 launcher-noadmin.bat，失败再回退 launcher.bat。
+            string launcher = null;
+            string[] preferred = new string[] { "launcher-noadmin.bat", "launcher.bat" };
+            foreach (string name in preferred)
+            {
+                launcher = Directory.GetFiles(napcatRoot, name, SearchOption.AllDirectories).FirstOrDefault();
+                if (launcher != null) break;
+            }
             if (launcher == null)
             {
-                SetMessage("没有找到 NapCat.Shell\\launcher.bat，请先安装/修复 NapCat。");
+                SetMessage("没有找到 NapCat 启动脚本（launcher.bat），请先安装/修复 NapCat。");
                 return;
             }
 
             string account = ReadEnv("QQ_BOT_ACCOUNT");
             if (account.Length == 0) account = "100000000";
             string args = "/c call " + Quote(launcher) + " " + account;
+            WriteLog("napcat", "使用 launcher：" + launcher);
             StartManaged("napcat", "cmd.exe", args, Path.GetDirectoryName(launcher));
+
+            // 2) 提交启动 ≠ 启动成功，必须验证。
+            VerifyNapCatStartup(launcher);
         }
 
         private void SetupNapCat()
@@ -1803,7 +1950,9 @@ namespace JMComicBotManager
                 managed.LogFile = logFile;
                 managed.StartedAt = DateTime.Now;
                 processes[key] = managed;
-                SetMessage(key + " 已启动，PID " + process.Id);
+                // 注意：这里只是"提交启动"，进程是否真的活着、是否真的注入成功，
+                // 必须由调用方在几秒后验证（否则会出现"面板显示已启动、实际什么都没跑"）。
+                SetMessage(key + " 已提交启动，PID " + process.Id + "（正在验证…）");
                 RefreshStatus();
             }
             catch (Exception ex)

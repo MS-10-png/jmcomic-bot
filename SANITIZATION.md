@@ -124,3 +124,29 @@ PIXIV_PHPSESSID=...            # 不填 = Pixiv R18/R18G 图片取不到
 ## 五、审计报告
 
 `docs/审计报告-2026-10-12.md` 是对本项目的一次代码审计：22 条缺陷与优化项，按 P0–P3 分级，每条附代码位置与最小修复方案。报告全文不含任何个人信息。
+
+## 六、相对原版代码的改动（2026-10-12）
+
+针对审计报告的 P0 全部 5 条，外加 P1-6，已在本仓库修复。
+
+| 审计编号 | 问题 | 改动 | 涉及文件 |
+| --- | --- | --- | --- |
+| P0-1 | QQ 热更后 NapCat 失配，机器人静默变哑 | 新增 `check_napcat_compat.ps1`：读 `versions/config.json` 的 `curVersion`，与 `napcat.mjs` 里的支持列表比对；退出码 0/1/2/3 分别表示兼容/不兼容/NapCat 缺失/找不到 QQ | `check_napcat_compat.ps1`（新增） |
+| P0-5 | 安装脚本只在文件缺失时下载，永不更新 | `setup_napcat_shell.ps1` 改为**以兼容性为判据**：不兼容即自动下载最新 NapCat；新增 `-Force`；更新前后各跑一次自检；替换前备份、替换后还原 `config` 目录（避免重登 QQ / 重配 WebUI） | `setup_napcat_shell.ps1` |
+| P0-2 | 管理面板把启动失败报成成功 | 启动后延迟 4 秒验证（NapCat 进程 / cmd 进程 / 日志三者交叉判断），失败弹出窗口并回显日志尾部；`StartManaged` 的文案从「已启动」改为「已提交启动（正在验证…）」 | `BotManagerApp.cs` |
+| P0-4 | CHANGELOG 说用 launcher-noadmin，代码里写死 launcher.bat | `StartNapCat()` 按 `launcher-noadmin.bat` → `launcher.bat` 顺序查找，优先免提权启动 | `BotManagerApp.cs` |
+| P0-3 | 已编译的修复未部署 | 新增 `build_manager.bat` 一键编译（产物 `JMComicBotManager.new.exe`），配合已有 `apply_fix.bat` 完成部署 | `build_manager.bat`（新增） |
+| P1-6 | `.env` 对插件层完全失效 | `bot.py` 的加载器改为依次读取 `.env.local`、`.env` 并写入 `os.environ`（`setdefault` 保证优先级：系统环境变量 > `.env.local` > `.env`） | `bot.py` |
+| 附录 | 依赖声明缺 extra，按 README 装完起不来 | `requirements.txt` 与 `pyproject.toml` 对齐为 `nonebot2[fastapi,websockets]>=2.4.4` | `requirements.txt` |
+
+### 实测记录
+
+| 项目 | 结果 |
+| --- | --- |
+| `check_napcat_compat.ps1` 对真实环境判定 | `RESULT=UNSUPPORTED`（QQ `9.9.35-52892` vs 本地 NapCat 最高 `9.9.30-48517`）——准确复现了本次停机 |
+| `setup_napcat_shell.ps1` 兼容分支 | 本地 NapCat 已兼容时打印 `Skipping download` 且不下载 |
+| `setup_napcat_shell.ps1` 不兼容分支（完整跑通） | 自动下载 118 MB → 备份并还原 config → 替换 → 复查为 **`RESULT=OK`（QQ 9.9.35-52892 已支持，79 个 build）**。全程 139.5 秒 |
+| `BotManagerApp.cs` 编译 | `csc.exe` 退出码 0 |
+| `bot.py` 修复后 `os.environ` | `JM_CHAT_JUDGE=1`、`JM_SEARCH_SEND_COVERS=3`、`JM_CACHE_MAX_AGE_DAYS=30` 等全部就位（修复前均为 `None`） |
+| 机器人启动（全新 venv / nonebot 2.5.0 / Python 3.14） | 12 个插件全部加载，监听 `127.0.0.1:8081` |
+
