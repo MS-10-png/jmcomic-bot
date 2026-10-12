@@ -46,12 +46,80 @@
 | `_ghdesk_zh/` | 与本项目无关的第三方工具（GitHub Desktop 汉化），约 22 MB |
 | `.env.local` | 含真实 DeepSeek API Key |
 
-## 四、首次运行需要你自己配置
+## 四、下载后如何跑起来（逐步实测过）
 
-1. 复制 `.env.example` 为 `.env`，填入你的机器人 QQ 号
-2. 把 DeepSeek API Key 写进 `.env.local`（格式：`DEEPSEEK_API_KEY=sk-...`）
-3. 如需 Pixiv R18 图片，把 `PIXIV_PHPSESSID` 写进 `.env.local`
-4. 运行 `Start_All.bat` 或管理面板，权限白名单在面板里重新设置（迁移时已清空）
+> 环境：Windows + Python 3.10~3.14。以下每一步都在全新克隆 + 全新虚拟环境里验证过。
+
+**第 1 步 · 装依赖**
+
+```bat
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+> ⚠️ 2026-10-12 修正：原 `requirements.txt` 写的是裸 `nonebot2`，缺少 FastAPI/websockets extra，
+> 装完启动会直接报 `ImportError: Please install FastAPI first to use this driver`。
+> 现已改为 `nonebot2[fastapi,websockets]>=2.4.4`，与 `pyproject.toml` 保持一致。
+> 实测在 nonebot 2.5.0 + Python 3.14 下可正常启动。
+
+**第 2 步 · 配置机器人账号**
+
+复制 `.env.example` 为 `.env`，把 `QQ_BOT_ACCOUNT` 从占位值 `100000000` 改成你自己的 QQ 号。
+
+另外这 4 个文件里也有同一个占位值，需要一并替换（脱敏时统一改成了 `100000000`）：
+
+| 文件 | 行 |
+| --- | --- |
+| `BotManagerApp.cs` | 默认账号回退值 |
+| `Run_NapCat_Shell.bat` | 2 处 |
+| `Start_All.bat` | 登录提示行 |
+| `setup_napcat_shell.ps1` | `$QQ` 变量 |
+
+**第 3 步 · 获取 NapCat 运行时（约 118 MB，不随仓库分发）**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File setup_napcat_shell.ps1
+```
+
+脚本会从 NapCat 官方 release 下载 `NapCat.Shell.Windows.Node.zip` 并写入 OneBot 配置。
+
+> ⚠️ 必须在启动前确认：**本机 QQ 的 build 号在 NapCat 支持列表内**。
+> 取 `C:\Program Files\Tencent\QQNT\versions\config.json` 的 `curVersion`，
+> 在 `NapCat.Shell\napcat\napcat.mjs` 里搜这个 build——搜不到就会注入失败、机器人收不到消息。
+> 这个坑详见 `docs/审计报告-2026-10-12.md` 的 P0-1 / P0-5。
+
+**第 4 步 · 编译管理面板（EXE 不随仓库分发）**
+
+`启动管理面板.bat` / `.vbs` 会去跑 `JMComicBotManager.exe`，但该文件是编译产物，仓库里只有源码
+`BotManagerApp.cs`。需要先编译：
+
+```bat
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /codepage:65001 /target:winexe /optimize+ ^
+  /out:JMComicBotManager.exe /lib:C:\Windows\Microsoft.NET\Framework64\v4.0.30319 ^
+  /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll ^
+  BotManagerApp.cs
+```
+
+**第 5 步 · 可选密钥**
+
+写进 `.env.local`（不会进版本控制）：
+
+```
+DEEPSEEK_API_KEY=sk-...        # 不填 = 关闭 AI，回退规则解析
+PIXIV_PHPSESSID=...            # 不填 = Pixiv R18/R18G 图片取不到
+```
+
+**第 6 步 · 启动**
+
+双击 `Start_All.bat`（会顺带做依赖检查与 NapCat 安装），或先用管理面板。
+启动日志出现 `Uvicorn running on http://127.0.0.1:8081` 即成功；
+你本机的 OneBot 反向连接地址应为 `ws://127.0.0.1:8081/onebot/v11/ws`。
+
+权限白名单在管理面板里重新设置（迁移时已清空）。
+
+### 已知的启动现象
+
+- `Application startup complete` 会等约 **20 秒**才打印（两次独立实测都一样），期间不是卡死，稍等即可。
 
 ## 五、审计报告
 
