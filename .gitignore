@@ -1,0 +1,38 @@
+# 敏感配置（含 DeepSeek/Pixiv API Key、QQ 账号等），不要提交
+.env
+.env.prod
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# 运行时产物
+logs/
+downloads/
+plugins/download/
+*.log
+
+# 本地数据/状态库
+*.db
+plugins/llm_user_prefs.db
+
+# 构建产物
+JMComicBotManager.exe
+NapCat.Shell/
+
+# IDE
+.idea/
+.vscode/
+
+# 运行期用户状态（含 QQ 号 / 群号 / 聊天记录 / 偏好，禁止提交）
+plugins/bot_control.json
+plugins/jm_preferences.json
+plugins/jm_subscriptions.json
+plugins/llm_history.json
+plugins/llm_user_prefs.db
+plugins/pixiv_age_verification.json
+plugins/pixiv_preferences.json
+plugins/pixiv_subscribers.json
